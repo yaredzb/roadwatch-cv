@@ -1,0 +1,42 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# IDE files
+.vscode/
+.idea/
+
+# YOLO & Models
+*.pt
+*.onnx
+*.engine
+yolov8*.pt
+yolov11*.pt
+
+# Data & Outputs
+data/raw/*
+data/annotations/*
+data/samples/*
+!data/samples/.gitkeep
+outputs/*
+!outputs/.gitkeep
+
+# Local implementation plans & notes
+.local/
+

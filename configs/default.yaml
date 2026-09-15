@@ -1,0 +1,78 @@
+# Default Configuration for RoadWatch Pedestrian-Vehicle Risk Monitoring System
+
+video:
+  input_path: "data/samples/sample.mp4"
+  output_path: "outputs/run_default"
+  resize_width: null
+  resize_height: null
+  frame_skip: 0
+  output_codec: "mp4v"
+  live_preview: false
+
+detection:
+  model_path: "yolov8n.pt"
+  confidence_threshold: 0.35
+  iou_threshold: 0.45
+  relevant_classes:
+    - "person"
+    - "bicycle"
+    - "car"
+    - "motorcycle"
+    - "bus"
+    - "truck"
+  device: "cpu"
+  img_size: 640
+
+tracking:
+  algorithm: "bytetrack"
+  track_thresh: 0.25
+  match_thresh: 0.8
+  track_buffer: 30
+  min_observations: 3
+  max_trajectory_length: 60
+
+spatial:
+  distance_threshold: 0.08
+  trajectory_smoothing_alpha: 0.3
+  movement_threshold_px: 3.0
+  closing_distance_window: 5
+  zones:
+    pedestrian_crossing:
+      type: "shared_risk"
+      points:
+        - [100, 300]
+        - [500, 300]
+        - [550, 450]
+        - [50, 450]
+    sidewalk:
+      type: "pedestrian_only"
+      points:
+        - [0, 450]
+        - [640, 450]
+        - [640, 480]
+        - [0, 480]
+
+events:
+  min_persistence_sec: 0.5
+  cooldown_sec: 3.0
+  pre_event_clip_sec: 2.0
+  post_event_clip_sec: 2.0
+  snapshot_generation: true
+  enabled_rules:
+    - "shared_zone_conflict"
+    - "vehicle_in_pedestrian_zone"
+    - "close_proximity"
+    - "closing_distance"
+    - "sustained_exposure"
+  risk_weights:
+    shared_zone_conflict: 1
+    vehicle_in_pedestrian_zone: 3
+    close_proximity: 2
+    closing_distance: 2
+    vehicle_moving: 1
+    sustained_exposure: 1
+  risk_thresholds:
+    low: 0
+    moderate: 2
+    high: 4
+    critical: 6
