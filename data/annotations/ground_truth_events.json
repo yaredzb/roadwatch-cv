@@ -1,0 +1,12 @@
+[
+  {
+    "event_id": "GT-001",
+    "scenario": "scenario_crossing_conflict",
+    "description": "Pedestrian and vehicle simultaneously present and closing distance in crosswalk",
+    "start_time": 1.0,
+    "end_time": 3.5,
+    "involved_classes": ["person", "car"],
+    "zone": "pedestrian_crossing",
+    "expected_risk_level": "high"
+  }
+]

@@ -32,6 +32,7 @@ yolov11*.pt
 # Data & Outputs
 data/raw/*
 data/annotations/*
+!data/annotations/*.json
 data/samples/*
 !data/samples/.gitkeep
 outputs/*
