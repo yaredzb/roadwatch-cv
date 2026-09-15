@@ -124,6 +124,22 @@ class EventConfig(BaseModel):
         return self
 
 
+class CalibrationConfig(BaseModel):
+    """Configuration for planar homography calibration."""
+    enabled: bool = Field(default=False)
+    source_points: Optional[List[Tuple[float, float]]] = Field(default=None)
+    target_dimensions_meters: Optional[Tuple[float, float]] = Field(default=None)
+    metric_distance_threshold: float = Field(default=2.5, gt=0.0)
+    speed_threshold_kmh: float = Field(default=20.0, gt=0.0)
+
+    @field_validator("source_points")
+    @classmethod
+    def validate_points(cls, pts: Optional[List[Tuple[float, float]]]) -> Optional[List[Tuple[float, float]]]:
+        if pts is not None and len(pts) != 4:
+            raise ValueError("Calibration requires exactly 4 reference points.")
+        return pts
+
+
 class AppConfig(BaseModel):
     """Complete application configuration model."""
     video: VideoConfig
@@ -131,6 +147,7 @@ class AppConfig(BaseModel):
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
     spatial: SpatialConfig = Field(default_factory=SpatialConfig)
     events: EventConfig = Field(default_factory=EventConfig)
+    calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
 
 
 def load_config_from_dict(raw: Dict[str, Any]) -> AppConfig:

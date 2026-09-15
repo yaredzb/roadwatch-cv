@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Set
+from typing import TYPE_CHECKING, Dict, List, Optional
 from roadwatch.config import EventConfig, SpatialConfig
 from roadwatch.geometry import is_closing_distance, normalized_distance
 from roadwatch.logger import get_logger
 from roadwatch.tracks import TrackState
 from roadwatch.types import RiskLevel, ZoneType
 from roadwatch.zones import ZoneManager
+
+if TYPE_CHECKING:
+    from roadwatch.calibration import PerspectiveCalibrator
 
 logger = get_logger("roadwatch.risk")
 
@@ -24,6 +27,8 @@ class RiskAssessment:
     triggered_rules: List[str]
     normalized_distance: float
     shared_zones: List[str]
+    metric_distance: Optional[float] = None
+    vehicle_speed_kmh: Optional[float] = None
 
 
 class RiskEngine:
@@ -55,6 +60,9 @@ class RiskEngine:
         frame_width: int,
         frame_height: int,
         interaction_duration: float = 0.0,
+        calibrator: Optional[PerspectiveCalibrator] = None,
+        metric_threshold: float = 2.5,
+        veh_timestamps: Optional[List[float]] = None,
     ) -> RiskAssessment:
         """Evaluate all enabled risk rules for a specific pedestrian-vehicle pair."""
         score = 0
@@ -64,11 +72,17 @@ class RiskEngine:
             ped.smoothed_point, veh.smoothed_point, frame_width, frame_height
         )
 
+        metric_dist = None
+        speed_kmh = None
+        if calibrator:
+            metric_dist = calibrator.metric_distance(ped.smoothed_point, veh.smoothed_point)
+            if veh_timestamps and len(veh_timestamps) >= 2:
+                speed_kmh = calibrator.calculate_speed_kmh(veh.trajectory, veh_timestamps)
+
         ped_zones = set(z.name for z in zone_mgr.get_zones_for_point(ped.smoothed_point))
         veh_zones = set(z.name for z in zone_mgr.get_zones_for_point(veh.smoothed_point))
         common_zones = list(ped_zones.intersection(veh_zones))
 
-        # Check if vehicle is moving
         veh_moving = veh.displacement() >= self.spatial_cfg.movement_threshold_px
 
         # Rule 1: Shared-zone conflict
@@ -87,9 +101,10 @@ class RiskEngine:
                 score += self.weights.get("vehicle_in_pedestrian_zone", 3)
                 triggered.append("vehicle_in_pedestrian_zone")
 
-        # Rule 3: Close visual proximity
+        # Rule 3: Close proximity (metric if calibrated, normalized otherwise)
         if "close_proximity" in self.enabled_rules:
-            if norm_dist < self.spatial_cfg.distance_threshold:
+            is_close = (metric_dist < metric_threshold) if metric_dist is not None else (norm_dist < self.spatial_cfg.distance_threshold)
+            if is_close:
                 score += self.weights.get("close_proximity", 2)
                 triggered.append("close_proximity")
 
@@ -115,4 +130,6 @@ class RiskEngine:
             triggered_rules=triggered,
             normalized_distance=norm_dist,
             shared_zones=common_zones,
+            metric_distance=metric_dist,
+            vehicle_speed_kmh=speed_kmh,
         )

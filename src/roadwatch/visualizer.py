@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 import cv2
 import numpy as np
 
@@ -10,6 +10,9 @@ from roadwatch.risk_engine import RiskAssessment
 from roadwatch.tracks import TrackState
 from roadwatch.types import RiskLevel
 from roadwatch.zones import ZoneManager
+
+if TYPE_CHECKING:
+    from roadwatch.calibration import PerspectiveCalibrator
 
 COLOR_PEDESTRIAN = (255, 178, 50)   # Blue-Cyan in BGR
 COLOR_VEHICLE = (50, 150, 255)      # Orange in BGR
@@ -41,8 +44,13 @@ class Visualizer:
             thickness = max(1, int(2 * (i / len(pts))))
             cv2.line(frame, pts[i - 1], pts[i], color, thickness)
 
-    def draw_track(self, frame: np.ndarray, track: TrackState) -> None:
-        """Render bounding box, label badge, and ground contact point."""
+    def draw_track(
+        self,
+        frame: np.ndarray,
+        track: TrackState,
+        speed_kmh: Optional[float] = None,
+    ) -> None:
+        """Render bounding box, label badge, speed, and ground contact point."""
         x1, y1, x2, y2 = track.bounding_box.as_int_xyxy()
         color = COLOR_PEDESTRIAN if track.is_pedestrian else COLOR_VEHICLE
 
@@ -50,7 +58,8 @@ class Visualizer:
         gx, gy = track.ground_point.as_int_tuple()
         cv2.circle(frame, (gx, gy), 4, color, -1)
 
-        label = f"#{track.track_id} {track.class_name} {track.confidence:.2f}"
+        speed_tag = f" {speed_kmh:.0f}km/h" if speed_kmh is not None and speed_kmh > 1.0 else ""
+        label = f"#{track.track_id} {track.class_name}{speed_tag}"
         (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
         badge_y1 = max(0, y1 - th - baseline - 4)
         badge_x2 = min(frame.shape[1], x1 + tw + 6)
@@ -75,14 +84,12 @@ class Visualizer:
         p1 = ped.ground_point.as_int_tuple()
         p2 = veh.ground_point.as_int_tuple()
         color = RISK_COLORS.get(assessment.risk_level, (0, 0, 255))
-
-        # Dynamic connecting line
         cv2.line(frame, p1, p2, color, 2, cv2.LINE_AA)
 
-        # Midpoint indicator badge
         mid_x = (p1[0] + p2[0]) // 2
         mid_y = (p1[1] + p2[1]) // 2
-        badge = f"{assessment.risk_level.value.upper()} (Score: {assessment.score})"
+        dist_str = f" | {assessment.metric_distance:.1f}m" if assessment.metric_distance is not None else ""
+        badge = f"{assessment.risk_level.value.upper()}{dist_str}"
         (tw, th), _ = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
         cv2.rectangle(frame, (mid_x - 4, mid_y - th - 4), (mid_x + tw + 4, mid_y + 4), color, -1)
         cv2.putText(frame, badge, (mid_x, mid_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_TEXT, 1, cv2.LINE_AA)
@@ -119,24 +126,24 @@ class Visualizer:
         fps: float,
         zone_mgr: Optional[ZoneManager] = None,
         assessments: Optional[List[RiskAssessment]] = None,
+        speeds_by_id: Optional[Dict[int, float]] = None,
+        calibrator: Optional[PerspectiveCalibrator] = None,
     ) -> np.ndarray:
-        """Annotate frame with zones, tracks, trails, risk pairs, and HUD."""
+        """Annotate frame with zones, tracks, trails, risk pairs, HUD, and optional BEV radar."""
         annotated = frame.copy()
 
-        # 1. Render zones
         if zone_mgr:
             annotated = zone_mgr.draw_zones(annotated)
 
-        # 2. Render tracks and trails
         tracks_by_id = {t.track_id: t for t in tracks}
         num_ped = sum(1 for t in tracks if t.is_pedestrian)
         num_veh = sum(1 for t in tracks if t.is_vehicle)
 
         for track in tracks:
             self.draw_trail(annotated, track)
-            self.draw_track(annotated, track)
+            speed = speeds_by_id.get(track.track_id) if speeds_by_id else None
+            self.draw_track(annotated, track, speed_kmh=speed)
 
-        # 3. Render risk interactions
         active_risks = 0
         if assessments:
             for a in assessments:
@@ -144,6 +151,14 @@ class Visualizer:
                     active_risks += 1
                     self.draw_risk_interaction(annotated, a, tracks_by_id)
 
-        # 4. Render HUD
         self.draw_hud(annotated, frame_idx, timestamp, fps, num_ped, num_veh, active_risks)
+
+        # Inset BEV radar canvas in top-right corner
+        if calibrator:
+            bev = calibrator.render_bev(tracks, bev_size=(150, 150))
+            h, w = annotated.shape[:2]
+            y1, y2 = 40, 190
+            x1, x2 = w - 160, w - 10
+            annotated[y1:y2, x1:x2] = bev
+
         return annotated

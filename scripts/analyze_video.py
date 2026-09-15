@@ -15,6 +15,7 @@ SRC_PATH = PROJECT_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
+from roadwatch.calibration import PerspectiveCalibrator
 from roadwatch.config import AppConfig, load_config
 from roadwatch.detector import YOLODetector
 from roadwatch.events import EventManager
@@ -43,25 +44,35 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument("-o", "--output", type=str, help="Path to output directory")
     parser.add_argument(
-        "--validate-config",
-        action="store_true",
-        help="Validate configuration file syntax and exit",
+        "--validate-config", action="store_true", help="Validate configuration and exit"
     )
     parser.add_argument(
-        "--max-frames",
-        type=int,
-        default=None,
-        help="Maximum number of frames to process",
+        "--max-frames", type=int, default=None, help="Maximum number of frames to process"
     )
     parser.add_argument(
-        "--disable-clips",
-        action="store_true",
-        help="Disable generating video clips for events",
+        "--disable-clips", action="store_true", help="Disable generating event clips"
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable debug/verbose logging"
     )
     return parser.parse_args()
+
+
+def init_calibrator(cfg: AppConfig, logger) -> PerspectiveCalibrator | None:
+    """Initialize calibrator if enabled and valid configuration exists."""
+    c_cfg = cfg.calibration
+    if not c_cfg.enabled or not c_cfg.source_points or not c_cfg.target_dimensions_meters:
+        return None
+    try:
+        calib = PerspectiveCalibrator(
+            source_points=c_cfg.source_points,
+            target_dimensions_meters=c_cfg.target_dimensions_meters,
+        )
+        logger.info("Perspective calibration & BEV radar ENABLED.")
+        return calib
+    except Exception as exc:
+        logger.warning(f"Failed to initialize calibration: {exc}")
+        return None
 
 
 def process_video_stream(
@@ -84,11 +95,13 @@ def process_video_stream(
     event_mgr = EventManager(cfg.events)
     visualizer = Visualizer(show_trails=True)
     exporter = OutputExporter(out_dir)
+    calibrator = init_calibrator(cfg, logger)
 
-    all_pedestrian_ids = set()
-    all_vehicle_ids = set()
+    all_ped_ids = set()
+    all_veh_ids = set()
     pair_distances: dict[tuple[int, int], list[float]] = defaultdict(list)
     pair_starts: dict[tuple[int, int], float] = {}
+    track_timestamps: dict[int, list[float]] = defaultdict(list)
 
     start_time = time.time()
     frames_processed = 0
@@ -96,8 +109,7 @@ def process_video_stream(
     with VideoReader(in_file) as reader:
         meta = reader.metadata
         evidence = EvidenceManager(
-            output_dir=out_dir,
-            fps=meta.fps,
+            output_dir=out_dir, fps=meta.fps,
             pre_event_sec=cfg.events.pre_event_clip_sec,
             post_event_sec=cfg.events.post_event_clip_sec,
             enable_clips=(not disable_clips and cfg.events.pre_event_clip_sec > 0),
@@ -105,18 +117,14 @@ def process_video_stream(
         )
 
         with VideoWriter(
-            output_path=out_video_path,
-            fps=meta.fps,
-            width=meta.width,
-            height=meta.height,
-            codec=cfg.video.output_codec,
+            output_path=out_video_path, fps=meta.fps,
+            width=meta.width, height=meta.height, codec=cfg.video.output_codec,
         ) as writer:
             for frame_idx, timestamp, frame in reader.read_frames(
                 frame_skip=cfg.video.frame_skip, max_frames=max_frames
             ):
                 frame_t0 = time.perf_counter()
 
-                # Detect & Track
                 detections, _ = detector.detect(frame)
                 tracked_results = tracker.update(detections)
 
@@ -127,15 +135,24 @@ def process_video_stream(
                         track_id=tid, class_name=det.class_name, confidence=det.confidence,
                         bounding_box=det.bounding_box, timestamp=timestamp,
                     )
+                    track_timestamps[tid].append(timestamp)
                     if det.class_name == "person":
-                        all_pedestrian_ids.add(tid)
+                        all_ped_ids.add(tid)
                     else:
-                        all_vehicle_ids.add(tid)
+                        all_veh_ids.add(tid)
 
                 traj_manager.mark_missed(visible_ids)
                 tracks = traj_manager.get_confirmed_tracks()
 
-                # Evaluate Risk
+                # Calculate vehicle speeds if calibrator enabled
+                speeds_by_id: dict[int, float] = {}
+                if calibrator:
+                    for t in tracks:
+                        if t.is_vehicle:
+                            speeds_by_id[t.track_id] = calibrator.calculate_speed_kmh(
+                                t.trajectory, track_timestamps[t.track_id]
+                            )
+
                 peds = [t for t in tracks if t.is_pedestrian]
                 vehs = [t for t in tracks if t.is_vehicle]
                 assessments = []
@@ -149,10 +166,12 @@ def process_video_stream(
                             ped=p, veh=v, distance_history=pair_distances[pair],
                             zone_mgr=zone_mgr, frame_width=meta.width, frame_height=meta.height,
                             interaction_duration=(timestamp - pair_starts[pair]),
+                            calibrator=calibrator,
+                            metric_threshold=cfg.calibration.metric_distance_threshold,
+                            veh_timestamps=track_timestamps[v.track_id],
                         )
                         assessments.append(a)
 
-                # Event Lifecycle & Evidence
                 activated, resolved = event_mgr.update(assessments, timestamp)
                 for act in activated:
                     evidence.trigger_event_start(act, frame)
@@ -161,12 +180,12 @@ def process_video_stream(
 
                 evidence.update_frame(timestamp, frame)
 
-                # Render & Write
                 frame_fps = 1.0 / max(1e-5, time.perf_counter() - frame_t0)
                 annotated = visualizer.render(
                     frame=frame, tracks=tracks, frame_idx=frame_idx,
                     timestamp=timestamp, fps=frame_fps, zone_mgr=zone_mgr,
-                    assessments=assessments,
+                    assessments=assessments, speeds_by_id=speeds_by_id,
+                    calibrator=calibrator,
                 )
                 writer.write_frame(annotated)
                 frames_processed += 1
@@ -175,19 +194,14 @@ def process_video_stream(
     avg_fps = frames_processed / total_time if total_time > 0 else 0
     events = event_mgr.completed_events
 
-    # Export Structured Reports
     exporter.export_events_json(events)
     exporter.export_events_csv(events)
     exporter.export_summary_json(
         events=events, total_frames=frames_processed, duration=total_time,
-        avg_fps=avg_fps, total_pedestrians=len(all_pedestrian_ids),
-        total_vehicles=len(all_vehicle_ids), config_path=str(cfg.video.input_path),
+        avg_fps=avg_fps, total_pedestrians=len(all_ped_ids),
+        total_vehicles=len(all_veh_ids), config_path=str(cfg.video.input_path),
     )
-
-    logger.info(
-        f"Processing complete: {frames_processed} frames in {total_time:.2f}s (Avg {avg_fps:.1f} FPS) | "
-        f"Detected {len(events)} events | Outputs saved to {out_dir}"
-    )
+    logger.info(f"Analysis complete: {frames_processed} frames (Avg {avg_fps:.1f} FPS) | {len(events)} events")
 
 
 def main() -> int:

@@ -126,7 +126,16 @@ python scripts/configure_zones.py --input data/samples/sample.mp4 --config confi
 - **`s`**: Save all zones back into YAML configuration.
 - **`q`**: Quit without saving.
 
-### 4.3 Benchmarking & Event Evaluation
+### 4.3 Perspective Calibration & Bird's-Eye View (BEV)
+Map camera pixels into real-world ground-plane meters for physical distance and speed estimation:
+```bash
+python scripts/calibrate_camera.py --input data/samples/sample.mp4 --config configs/default.yaml
+```
+- Click 4 reference points on a known ground rectangle (e.g., crosswalk corners).
+- Enter real-world width and length in meters.
+- When enabled, RoadWatch projects ground points to real-world meters (`X.Xm`), estimates vehicle speeds (`XX km/h`), and overlays an in-video top-down radar canvas.
+
+### 4.4 Benchmarking & Event Evaluation
 Evaluate detected events against ground truth annotations:
 ```bash
 python scripts/evaluate_events.py \
